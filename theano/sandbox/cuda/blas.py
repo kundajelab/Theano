@@ -400,6 +400,7 @@ class GpuGemm(GpuOp):
     implement the gemm on the gpu.
 
     """
+    _op_use_c_code = theano.config.cxx
     def __init__(self, inplace):
         self.__setstate__({'inplace': inplace})
 
