@@ -17,7 +17,8 @@ from theano.scan_module import scan_utils, scan_op, scan_opt
 from theano.tensor.nnet.conv import ConvOp
 from theano.tests.breakpoint import PdbBreakpoint
 
-from .type import GpuArrayType, GpuArrayConstant, get_context
+from .type import (GpuArrayType, GpuArrayConstant, get_context,
+                   ContextNotDefined)
 from .basic_ops import (as_gpuarray_variable, infer_context_name,
                         host_from_gpu, GpuToGpu,
                         HostFromGpu, GpuFromHost,
@@ -50,7 +51,7 @@ conv_groupopt = LocalGroupDB()
 conv_groupopt.__name__ = "gpua_conv_opts"
 
 gpu_seqopt.register('gpuarray_local_optimiziations', gpu_optimizer, 1,
-                    'fast_compile', 'fast_run', 'inplace', 'gpuarray')
+                    'fast_compile', 'fast_run', 'gpuarray')
 gpu_seqopt.register('gpuarray_cut_transfers', gpu_cut_copies, 2,
                     'fast_compile', 'fast_run', 'gpuarray')
 
@@ -128,18 +129,16 @@ def op_lifter(OP, cuda_only=False):
                      get_context(context_name).kind != 'cuda')):
                     return False
 
+                # tag the inputs with the context in case
+                # the context was derived from the outputs
+                for i in node.inputs:
+                    i.tag.context_name = context_name
                 new_op = maker(node, context_name)
                 # This is needed as sometimes new_op inherits from OP.
                 if new_op and new_op != node.op:
                     if isinstance(new_op, theano.Op):
-                        # tag the inputs with the context in case
-                        # the context was derived from the outputs
-                        def tag(i, ctx):
-                            i.tag.context_name = ctx
-                            return i
-                        inputs = [tag(i, context_name) for i in node.inputs]
                         return [safe_to_cpu(o) for o in
-                                new_op(*inputs, return_list=True)]
+                                new_op(*node.inputs, return_list=True)]
                     elif isinstance(new_op, (tuple, list)):
                         return [safe_to_cpu(o) for o in new_op]
                     else:  # suppose it is a variable on the GPU
@@ -164,9 +163,9 @@ class InputToGpuOptimizer(Optimizer):
             if isinstance(input.type, GpuArrayType):
                 continue
 
-            if (len(input.clients) == 1 and
-                (input.clients[0][0] == 'output' or
-                 isinstance(input.clients[0][0].op, GpuFromHost))):
+            # If all clients are outputs or transfers don't do anything.
+            if (all(cl[0] == 'output' or isinstance(cl[0].op, GpuFromHost)
+                    for cl in input.clients)):
                 continue
 
             ctx_name = getattr(input.tag, 'context_name', None)
@@ -177,11 +176,11 @@ class InputToGpuOptimizer(Optimizer):
             except TypeError:
                 # This could fail if the inputs are not TensorTypes
                 pass
-            except ValueError:
+            except ContextNotDefined:
+                if hasattr(input.tag, 'context_name'):
+                    raise
                 # If there is no context tag and no default context
                 # then it stays on the CPU
-                if not hasattr(input.tag, 'context_name'):
-                    raise
                 pass
 
 
@@ -194,7 +193,7 @@ def local_cut_gpu_transfers(node):
     # gpu[ab] -> host -> gpub
     if (isinstance(node.op, GpuFromHost) and
             node.inputs[0].owner and
-            node.inputs[0].owner.op == host_from_gpu):
+            isinstance(node.inputs[0].owner.op, HostFromGpu)):
         other = node.inputs[0].owner.inputs[0]
         if node.op.context_name == other.type.context_name:
             return [other]
@@ -202,7 +201,7 @@ def local_cut_gpu_transfers(node):
             return [GpuToGpu(node.op.context_name)(other)]
 
     # ? -> gpua -> host
-    elif (node.op == host_from_gpu and
+    elif (isinstance(node.op, HostFromGpu) and
           node.inputs[0].owner):
         n2 = node.inputs[0].owner
 
@@ -255,7 +254,7 @@ def local_gpuaalloc2(node):
     """
     try:
         get_context(None)
-    except ValueError:
+    except ContextNotDefined:
         # If there is no default context then we do not perform the move here.
         return
     if (isinstance(node.op, tensor.Alloc) and
@@ -360,9 +359,9 @@ def local_gpu_elemwise(node, context_name):
         for inp in node.inputs:
             if inp.dtype != out_dtype:
                 gpu_cast_op = GpuElemwise(Cast(Scalar(out_dtype)))
-                new_inputs.append(gpu_cast_op(as_gpuarray_variable(inp)))
+                new_inputs.append(gpu_cast_op(as_gpuarray_variable(inp, context_name)))
             else:
-                new_inputs.append(as_gpuarray_variable(inp))
+                new_inputs.append(as_gpuarray_variable(inp, context_name))
 
         # Perform the exponent on the gpu and transfer the output back to the
         # cpu.
@@ -592,11 +591,11 @@ def local_gpua_advanced_incsubtensor(node, context_name):
     compute_capability = device_properties(active_device_no)['major']
 
     if (compute_capability < 2 or x.ndim != 2 or y.ndim != 2):
-        return [GpuAdvancedIncSubtensor1(
-                set_instead_of_inc=set_instead_of_inc)(x, y, ilist)]
+        return GpuAdvancedIncSubtensor1(
+            set_instead_of_inc=set_instead_of_inc)
     else:
-        return [GpuAdvancedIncSubtensor1_dev20(
-                set_instead_of_inc=set_instead_of_inc)(x, y, ilist)]
+        return GpuAdvancedIncSubtensor1_dev20(
+            set_instead_of_inc=set_instead_of_inc)
 
 
 @register_opt('fast_compile')
@@ -865,12 +864,13 @@ def local_gpu_elemwise_careduce(node):
             isinstance(node.inputs[0].owner.op, GpuElemwise) and
             # The Op support all scalar with 1 inputs.  We don't
             # automatically add more case, as some like trigonometic
-            # operation with some reduction pattern will probably result
-            # to slow down.
+            # operation with some reduction pattern will probably results
+            # in slow down.
             isinstance(node.inputs[0].owner.op.scalar_op, scalar.basic.Sqr)):
         op = node.op
         inp = node.inputs[0].owner.inputs[0]
         return [GpuCAReduceCuda(scalar_op=op.scalar_op,
+                                axis=op.axis,
                                 reduce_mask=op.reduce_mask,
                                 pre_scalar_op=scalar.basic.sqr)(inp)]
 

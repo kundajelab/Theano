@@ -402,7 +402,9 @@ class GpuGemm(GpuOp):
     """
     _op_use_c_code = theano.config.cxx
     def __init__(self, inplace):
-        self.__setstate__({'inplace': inplace})
+        self.inplace = inplace
+        if self.inplace:
+            self.destroy_map = {0: [0]}
 
     def __str__(self):
         if self.inplace:
@@ -418,13 +420,14 @@ class GpuGemm(GpuOp):
         return hash(type(self)) ^ hash(self.inplace)
 
     def __setstate__(self, dct):
-        inplace = dct.get('inplace', True)
-        if inplace:
-            self.destroy_map = {0: [0]}
-        self.inplace = inplace
+        self.__dict__.update(dct)
 
-    def __getstate__(self):
-        return dict(inplace=self.inplace)
+        # Correctly reload older pickles where _op_use_c_code and
+        # destroy_map were not saved
+        if '_op_use_c_code' not in self.__dict__:
+            self._op_use_c_code = theano.config.cxx
+        if 'destroy_map' not in self.__dict__ and self.inplace:
+            self.destroy_map = {0: [0]}
 
     def make_node(self, z, a, x, y, b):
         # the more complicated error checking performed by tensor.gemm
@@ -519,7 +522,9 @@ class GpuGemv(GpuOp):
 
     """
     def __init__(self, inplace):
-        self.__setstate__({'inplace': inplace})
+        self.inplace = inplace
+        if self.inplace:
+            self.destroy_map = {0: [0]}
 
     def __str__(self):
         if self.inplace:
@@ -535,13 +540,14 @@ class GpuGemv(GpuOp):
         return hash(type(self)) ^ hash(self.inplace)
 
     def __setstate__(self, dct):
-        inplace = dct.get('inplace', True)
-        if inplace:
-            self.destroy_map = {0: [0]}
-        self.inplace = inplace
+        self.__dict__.update(dct)
 
-    def __getstate__(self):
-        return dict(inplace=self.inplace)
+        # Correctly reload older pickles where _op_use_c_code and
+        # destroy_map were not saved
+        if '_op_use_c_code' not in self.__dict__:
+            self._op_use_c_code = theano.config.cxx
+        if 'destroy_map' not in self.__dict__ and self.inplace:
+            self.destroy_map = {0: [0]}
 
     def make_node(self, z, a, x, y, b):
         # the more complicated error checking performed by tensor.gemv
@@ -616,7 +622,9 @@ class GpuGer(GpuOp):
 
     """
     def __init__(self, inplace):
-        self.__setstate__({'inplace': inplace})
+        self.inplace = inplace
+        if self.inplace:
+            self.destroy_map = {0: [0]}
 
     def __str__(self):
         if self.inplace:
@@ -632,13 +640,14 @@ class GpuGer(GpuOp):
         return hash(type(self)) ^ hash(self.inplace)
 
     def __setstate__(self, dct):
-        inplace = dct.get('inplace', True)
-        if inplace:
-            self.destroy_map = {0: [0]}
-        self.inplace = inplace
+        self.__dict__.update(dct)
 
-    def __getstate__(self):
-        return dict(inplace=self.inplace)
+        # Correctly reload older pickles where _op_use_c_code and
+        # destroy_map were not saved
+        if '_op_use_c_code' not in self.__dict__:
+            self._op_use_c_code = theano.config.cxx
+        if 'destroy_map' not in self.__dict__ and self.inplace:
+            self.destroy_map = {0: [0]}
 
     def make_node(self, z, a, x, y):
         # the more complicated error checking performed by tensor.ger is
